@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      width: 280px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      color: #1a1a1a;
+      background: #fafafa;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #e53935;
+    }
+    .stat {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      text-align: center;
+    }
+    .stat .count {
+      font-size: 28px;
+      font-weight: 700;
+      color: #e53935;
+    }
+    .stat .label {
+      font-size: 12px;
+      color: #666;
+      margin-top: 2px;
+    }
+    .site-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .site-row .hostname {
+      font-size: 13px;
+      font-weight: 500;
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .toggle {
+      position: relative;
+      width: 42px;
+      height: 24px;
+      cursor: pointer;
+    }
+    .toggle input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      inset: 0;
+      background: #e53935;
+      border-radius: 12px;
+      transition: background 0.2s;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .toggle input:checked + .slider {
+      background: #4caf50;
+    }
+    .toggle input:checked + .slider::before {
+      transform: translateX(18px);
+    }
+    .status {
+      font-size: 11px;
+      color: #888;
+      text-align: center;
+    }
+    .status.blocking {
+      color: #e53935;
+    }
+    .status.allowed {
+      color: #4caf50;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔇 Shut Up</h1>
+  <div class="stat">
+    <div class="count" id="count">0</div>
+    <div class="label">autoplay attempts blocked on this page</div>
+  </div>
+  <div class="site-row">
+    <span class="hostname" id="hostname">loading...</span>
+    <label class="toggle" title="Toggle autoplay for this site">
+      <input type="checkbox" id="whitelist-toggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+  <div class="status" id="status">Blocking autoplay</div>
+  <script src="popup.js"></script>
+</body>
+</html>
