@@ -259,7 +259,7 @@
         }, 300);
       }
 
-      // Click YouTube's native play button — but only if video isn't already playing
+      // Click YouTube's native play button to let YT's own player re-init properly
       var clickYtPlay = function () {
         const vid = document.querySelector("#movie_player video, video");
         // Don't click if already playing
@@ -272,6 +272,7 @@
       setTimeout(clickYtPlay, 50);
       setTimeout(clickYtPlay, 200);
       setTimeout(clickYtPlay, 500);
+      setTimeout(clickYtPlay, 1500);
     }
 
     function installOverlay() {
@@ -330,12 +331,34 @@
       const old = document.querySelector("[data-shutup-overlay]");
       if (old) old.remove();
 
-      // Reset all video elements
+      // IMMEDIATELY pause and reset all video elements — this prevents
+      // the video from playing underneath the overlay during SPA navigation
       document.querySelectorAll("video").forEach(function (v) {
         v.__shutUpUserActivated = false;
+        try {
+          v.pause();
+          // Wipe the src so it stops buffering/playing entirely
+          // Store current src in case we need it later
+          if (v.src) {
+            v.__shutUpPendingSrc = v.src;
+          }
+          if (srcDescriptor && srcDescriptor.set) {
+            // Use original setter to clear
+            srcDescriptor.set.call(v, "");
+          }
+          if (v.srcObject) {
+            v.__shutUpPendingSrcObj = v.srcObject;
+            if (srcObjDescriptor && srcObjDescriptor.set) {
+              srcObjDescriptor.set.call(v, null);
+            }
+          }
+          v.removeAttribute("src");
+          v.load(); // Force the empty state
+        } catch (e) {}
       });
 
       // Install new overlay (with retries since YT loads async)
+      installOverlay();
       setTimeout(installOverlay, 100);
       setTimeout(installOverlay, 500);
       setTimeout(installOverlay, 1200);
@@ -355,6 +378,20 @@
     };
     window.addEventListener("popstate", function () { setTimeout(onNavigate, 50); });
 
+    // Extra safety: catch any video that starts playing when it shouldn't
+    // This handles the race where YT's player fires play before our overlay is ready
+    document.addEventListener("playing", function (e) {
+      if (userClickedPlay || isWhitelisted()) return;
+      const video = e.target;
+      if (video && video.tagName === "VIDEO" && !video.__shutUpUserActivated) {
+        // Only intervene for the main player, not thumbnail previews
+        const inPlayer = video.closest("#movie_player, ytd-player, #player-container-outer");
+        if (inPlayer) {
+          try { video.pause(); } catch (err) {}
+        }
+      }
+    }, true);
+
     // MutationObserver to catch the player appearing
     function startObserving() {
       const obs = new MutationObserver(function () {
@@ -362,6 +399,13 @@
           const player = document.querySelector("#movie_player");
           if (player && !player.querySelector("[data-shutup-overlay]") && !userClickedPlay) {
             installOverlay();
+
+            // Also ensure video is paused if overlay just got installed
+            // This handles the race where YT starts playing during SPA nav
+            const video = player.querySelector("video");
+            if (video && !video.paused && !video.__shutUpUserActivated) {
+              try { video.pause(); } catch (e) {}
+            }
           }
         }
 
