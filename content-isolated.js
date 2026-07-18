@@ -18,11 +18,15 @@
   // Listen for blocked events from the main world
   window.addEventListener("message", function (e) {
     if (e.data && e.data.type === "__shutup_blocked") {
-      chrome.runtime.sendMessage({
-        type: "blocked",
-        count: e.data.count,
-        hostname: hostname,
-      });
+      try {
+        chrome.runtime.sendMessage({
+          type: "blocked",
+          count: e.data.count,
+          hostname: hostname,
+        });
+      } catch (err) {
+        // Extension context invalidated (reload/update) — ignore
+      }
     }
   });
 
