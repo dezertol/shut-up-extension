@@ -16,6 +16,20 @@
   let blockedCount = 0;
   let userClickedPlay = false;
 
+  // ═══════════════════════════════════════════════════════════════
+  // Detect YouTube early — needed by the play() override below
+  // ═══════════════════════════════════════════════════════════════
+
+  const isYouTube = location.hostname === "www.youtube.com" ||
+                    location.hostname === "youtube.com" ||
+                    location.hostname === "m.youtube.com";
+
+  // Track which URL the user last clicked play on — used to invalidate
+  // __shutUpUserActivated when YouTube navigates to a new video
+  let activatedForUrl = isYouTube ? "" : location.href;
+
+  console.log("shutup: initialized", { isYouTube, activatedForUrl, href: location.href });
+
   function notifyBlocked() {
     blockedCount++;
     window.postMessage({ type: "__shutup_blocked", count: blockedCount }, "*");
@@ -29,6 +43,7 @@
   window.addEventListener("message", function (e) {
     if (e.data && e.data.type === "__shutup_whitelist") {
       window.__shutUpWhitelisted = !!e.data.whitelisted;
+      console.log("shutup: whitelist message received", { whitelisted: e.data.whitelisted });
     }
   });
 
@@ -41,22 +56,64 @@
   const originalLoad = HTMLMediaElement.prototype.load;
 
   HTMLMediaElement.prototype.play = function () {
-    if (isWhitelisted()) return originalPlay.apply(this, arguments);
-    if (this.__shutUpUserActivated) return originalPlay.apply(this, arguments);
+    const tag = this.id || this.className || this.tagName;
+    const inPlayer = this.closest && this.closest("#movie_player, ytd-player, #player-container-outer");
+
+    if (isWhitelisted()) {
+      console.log("shutup: play() ALLOWED — whitelisted", { tag });
+      return originalPlay.apply(this, arguments);
+    }
+
+    // On YouTube: hard gate.
+    if (isYouTube) {
+      if (userClickedPlay) {
+        console.log("shutup: play() ALLOWED — userClickedPlay=true", { tag, href: location.href });
+        this.__shutUpUserActivated = true;
+        activatedForUrl = location.href;
+        userClickedPlay = false;
+        return originalPlay.apply(this, arguments);
+      }
+      if (this.__shutUpUserActivated) {
+        const overlayPresent = !!document.querySelector("[data-shutup-overlay]");
+        const urlMismatch = location.href !== activatedForUrl;
+        if (urlMismatch || overlayPresent) {
+          console.log("shutup: play() BLOCKED — stale activation", { tag, urlMismatch, overlayPresent, activatedForUrl, href: location.href });
+          this.__shutUpUserActivated = false;
+          this.preload = "none";
+          notifyBlocked();
+          try { this.pause(); } catch (e) {}
+          return Promise.resolve();
+        }
+        console.log("shutup: play() ALLOWED — __shutUpUserActivated valid", { tag, activatedForUrl });
+        return originalPlay.apply(this, arguments);
+      }
+      console.log("shutup: play() BLOCKED — no activation on YT", { tag, inPlayer: !!inPlayer, href: location.href });
+      this.preload = "none";
+      notifyBlocked();
+      try { this.pause(); } catch (e) {}
+      return Promise.resolve();
+    }
+
+    // Non-YouTube sites
+    if (this.__shutUpUserActivated) {
+      console.log("shutup: play() ALLOWED — __shutUpUserActivated (non-YT)", { tag });
+      return originalPlay.apply(this, arguments);
+    }
     if (userClickedPlay) {
+      console.log("shutup: play() ALLOWED — userClickedPlay (non-YT)", { tag });
       this.__shutUpUserActivated = true;
       userClickedPlay = false;
       return originalPlay.apply(this, arguments);
     }
     if (navigator.userActivation && navigator.userActivation.isActive) {
+      console.log("shutup: play() ALLOWED — userActivation.isActive (non-YT)", { tag });
       this.__shutUpUserActivated = true;
       return originalPlay.apply(this, arguments);
     }
 
-    // BLOCK — also prevent buffering
+    console.log("shutup: play() BLOCKED (non-YT)", { tag });
     this.preload = "none";
     notifyBlocked();
-
     try { this.pause(); } catch (e) {}
     return Promise.resolve();
   };
@@ -65,10 +122,6 @@
   // STEP 2: Prevent video elements from loading src at all
   //         Override the src setter on HTMLMediaElement
   // ═══════════════════════════════════════════════════════════════
-
-  const isYouTube = location.hostname === "www.youtube.com" ||
-                    location.hostname === "youtube.com" ||
-                    location.hostname === "m.youtube.com";
 
   let blockSrcAssignment = isYouTube; // Start blocking on YT until user clicks
 
@@ -80,11 +133,21 @@
     Object.defineProperty(HTMLMediaElement.prototype, "src", {
       get: function () { return originalSrcGet.call(this); },
       set: function (val) {
-        if (isWhitelisted() || this.__shutUpUserActivated) {
+        if (isWhitelisted()) return originalSrcSet.call(this, val);
+        if (isYouTube) {
+          const overlayPresent = !!document.querySelector("[data-shutup-overlay]");
+          const urlMismatch = location.href !== activatedForUrl;
+          if (overlayPresent || urlMismatch) {
+            console.log("shutup: src setter BLOCKED (YT overlay/url)", { overlayPresent, urlMismatch, val: val && val.substring(0, 80) });
+            this.__shutUpPendingSrc = val;
+            return;
+          }
+        }
+        if (this.__shutUpUserActivated) {
           return originalSrcSet.call(this, val);
         }
         if (blockSrcAssignment) {
-          // Store it but don't set it — we'll use it when user clicks play
+          console.log("shutup: src setter BLOCKED (blockSrcAssignment)", { val: val && val.substring(0, 80) });
           this.__shutUpPendingSrc = val;
           return;
         }
@@ -104,10 +167,21 @@
     Object.defineProperty(HTMLMediaElement.prototype, "srcObject", {
       get: function () { return originalSrcObjGet.call(this); },
       set: function (val) {
-        if (isWhitelisted() || this.__shutUpUserActivated) {
+        if (isWhitelisted()) return originalSrcObjSet.call(this, val);
+        if (isYouTube) {
+          const overlayPresent = !!document.querySelector("[data-shutup-overlay]");
+          const urlMismatch = location.href !== activatedForUrl;
+          if (overlayPresent || urlMismatch) {
+            console.log("shutup: srcObject setter BLOCKED (YT overlay/url)", { overlayPresent, urlMismatch, val: val ? "MediaSource" : "null" });
+            this.__shutUpPendingSrcObj = val;
+            return;
+          }
+        }
+        if (this.__shutUpUserActivated) {
           return originalSrcObjSet.call(this, val);
         }
         if (blockSrcAssignment) {
+          console.log("shutup: srcObject setter BLOCKED (blockSrcAssignment)", { val: val ? "MediaSource" : "null" });
           this.__shutUpPendingSrcObj = val;
           return;
         }
@@ -220,6 +294,8 @@
     }
 
     function activatePlayer() {
+      console.log("shutup: activatePlayer() called", { href: location.href });
+
       // Remove overlay
       const overlay = document.querySelector(".shutup-overlay");
       if (overlay) overlay.remove();
@@ -227,11 +303,19 @@
       // Unblock src assignment
       blockSrcAssignment = false;
       userClickedPlay = true;
+      activatedForUrl = location.href;
+
+      console.log("shutup: overlay removed, activatedForUrl set", { activatedForUrl });
 
       // Find the video element and activate it
       const video = document.querySelector("#movie_player video, video");
       if (video) {
         video.__shutUpUserActivated = true;
+
+        console.log("shutup: video found, restoring sources", {
+          hasPendingSrcObj: !!video.__shutUpPendingSrcObj,
+          hasPendingSrc: !!video.__shutUpPendingSrc
+        });
 
         // If we captured a pending srcObject, set it now
         if (video.__shutUpPendingSrcObj) {
@@ -250,22 +334,29 @@
 
         // Wait for enough data to play
         video.addEventListener("canplay", function () {
+          console.log("shutup: canplay fired, calling originalPlay");
           originalPlay.call(video).catch(function () {});
         }, { once: true });
 
         // Also try playing after a short delay as fallback
         setTimeout(function () {
+          console.log("shutup: fallback play timeout fired");
           originalPlay.call(video).catch(function () {});
         }, 300);
+      } else {
+        console.log("shutup: no video element found in activatePlayer!");
       }
 
       // Click YouTube's native play button to let YT's own player re-init properly
       var clickYtPlay = function () {
+        // Abort if overlay came back (shouldn't happen, but safety)
+        if (document.querySelector("[data-shutup-overlay]")) return;
         const vid = document.querySelector("#movie_player video, video");
         // Don't click if already playing
         if (vid && !vid.paused) return;
         const ytBtn = document.querySelector(".ytp-play-button");
         if (ytBtn) {
+          console.log("shutup: clicking YT native play button");
           ytBtn.click();
         }
       };
@@ -281,6 +372,12 @@
       const videoId = getVideoId(location.href);
       if (!videoId) return;
 
+      // Don't install overlay if user already activated playback for this URL
+      if (activatedForUrl === location.href) {
+        console.log("shutup: installOverlay() SKIPPED — URL matches activatedForUrl", { videoId, activatedForUrl });
+        return;
+      }
+
       // Find the player container
       const playerContainer = document.querySelector("#movie_player") ||
                               document.querySelector("ytd-player") ||
@@ -290,6 +387,8 @@
 
       // Already installed?
       if (playerContainer.querySelector("[data-shutup-overlay]")) return;
+
+      console.log("shutup: installOverlay()", { videoId, href: location.href });
 
       injectStyles();
 
@@ -309,9 +408,11 @@
       // Also kill any video that's already there
       const video = playerContainer.querySelector("video");
       if (video) {
+        const wasPaused = video.paused;
         try {
+          video.__shutUpUserActivated = false;
           video.pause();
-          // Don't remove src — just block it from being set via our override
+          console.log("shutup: paused existing video in installOverlay", { wasPaused });
         } catch (e) {}
       }
     }
@@ -321,6 +422,7 @@
 
     function onNavigate() {
       if (location.href === lastUrl) return;
+      console.log("shutup: onNavigate() — URL changed", { from: lastUrl, to: location.href });
       lastUrl = location.href;
 
       // Reset state for new video
@@ -329,21 +431,21 @@
 
       // Remove old overlay
       const old = document.querySelector("[data-shutup-overlay]");
-      if (old) old.remove();
+      if (old) {
+        old.remove();
+        console.log("shutup: removed old overlay");
+      }
 
-      // IMMEDIATELY pause and reset all video elements — this prevents
-      // the video from playing underneath the overlay during SPA navigation
+      // IMMEDIATELY pause and reset all video elements
       document.querySelectorAll("video").forEach(function (v) {
+        const wasPaused = v.paused;
         v.__shutUpUserActivated = false;
         try {
           v.pause();
-          // Wipe the src so it stops buffering/playing entirely
-          // Store current src in case we need it later
           if (v.src) {
             v.__shutUpPendingSrc = v.src;
           }
           if (srcDescriptor && srcDescriptor.set) {
-            // Use original setter to clear
             srcDescriptor.set.call(v, "");
           }
           if (v.srcObject) {
@@ -353,7 +455,8 @@
             }
           }
           v.removeAttribute("src");
-          v.load(); // Force the empty state
+          v.load();
+          console.log("shutup: reset video in onNavigate", { wasPaused });
         } catch (e) {}
       });
 
@@ -365,31 +468,96 @@
       setTimeout(installOverlay, 3000);
     }
 
-    // Hook history API
+    // Hook history API — call onNavigate SYNCHRONOUSLY
     const origPushState = history.pushState;
     const origReplaceState = history.replaceState;
     history.pushState = function () {
+      console.log("shutup: history.pushState called", { url: arguments[2] });
       origPushState.apply(this, arguments);
-      setTimeout(onNavigate, 50);
+      onNavigate();
     };
     history.replaceState = function () {
+      console.log("shutup: history.replaceState called", { url: arguments[2] });
       origReplaceState.apply(this, arguments);
-      setTimeout(onNavigate, 50);
+      onNavigate();
     };
-    window.addEventListener("popstate", function () { setTimeout(onNavigate, 50); });
+    window.addEventListener("popstate", function () {
+      console.log("shutup: popstate fired");
+      onNavigate();
+    });
 
-    // Extra safety: catch any video that starts playing when it shouldn't
-    // This handles the race where YT's player fires play before our overlay is ready
+    // YouTube fires its own navigation event
+    document.addEventListener("yt-navigate-start", function () {
+      console.log("shutup: yt-navigate-start fired", { href: location.href });
+      onNavigate();
+    });
+
+    // BULLETPROOF: If the overlay is in the DOM and a video in the main player
+    // fires "playing", it's unauthorized — kill it immediately.
     document.addEventListener("playing", function (e) {
-      if (userClickedPlay || isWhitelisted()) return;
+      if (isWhitelisted()) return;
+      // Don't interfere if user already activated this URL
+      if (activatedForUrl === location.href) return;
       const video = e.target;
-      if (video && video.tagName === "VIDEO" && !video.__shutUpUserActivated) {
-        // Only intervene for the main player, not thumbnail previews
-        const inPlayer = video.closest("#movie_player, ytd-player, #player-container-outer");
-        if (inPlayer) {
-          try { video.pause(); } catch (err) {}
+      if (!video || video.tagName !== "VIDEO") return;
+
+      const overlay = document.querySelector("[data-shutup-overlay]");
+      if (!overlay) return;
+
+      const inPlayer = video.closest("#movie_player, ytd-player, #player-container-outer");
+      if (!inPlayer) return;
+
+      console.log("shutup: PLAYING event caught with overlay present — KILLING", {
+        paused: video.paused,
+        src: video.src && video.src.substring(0, 60),
+        currentTime: video.currentTime
+      });
+
+      try {
+        video.pause();
+        video.__shutUpUserActivated = false;
+        if (video.src) {
+          video.__shutUpPendingSrc = video.src;
+          if (srcDescriptor && srcDescriptor.set) {
+            srcDescriptor.set.call(video, "");
+          }
+          video.removeAttribute("src");
+          video.load();
         }
+        if (video.srcObject) {
+          video.__shutUpPendingSrcObj = video.srcObject;
+          if (srcObjDescriptor && srcObjDescriptor.set) {
+            srcObjDescriptor.set.call(video, null);
+          }
+        }
+      } catch (err) {}
+    }, true);
+
+    // Backup: timeupdate fires continuously during playback
+    let lastTimeupdateLog = 0;
+    document.addEventListener("timeupdate", function (e) {
+      if (isWhitelisted()) return;
+      // Don't interfere if user already activated this URL
+      if (activatedForUrl === location.href) return;
+      const video = e.target;
+      if (!video || video.tagName !== "VIDEO") return;
+
+      const overlay = document.querySelector("[data-shutup-overlay]");
+      if (!overlay) return;
+
+      const inPlayer = video.closest("#movie_player, ytd-player, #player-container-outer");
+      if (!inPlayer) return;
+
+      const now = Date.now();
+      if (now - lastTimeupdateLog > 500) {
+        console.log("shutup: TIMEUPDATE caught with overlay present — pausing", { currentTime: video.currentTime });
+        lastTimeupdateLog = now;
       }
+
+      try {
+        video.pause();
+        video.__shutUpUserActivated = false;
+      } catch (err) {}
     }, true);
 
     // MutationObserver to catch the player appearing
@@ -398,12 +566,16 @@
         if (location.pathname.startsWith("/watch") || location.pathname.startsWith("/shorts")) {
           const player = document.querySelector("#movie_player");
           if (player && !player.querySelector("[data-shutup-overlay]") && !userClickedPlay) {
+            // Don't reinstall if the user already activated this URL
+            if (activatedForUrl === location.href) {
+              return;
+            }
+            console.log("shutup: MutationObserver — installing overlay (no overlay found, userClickedPlay=false)");
             installOverlay();
 
-            // Also ensure video is paused if overlay just got installed
-            // This handles the race where YT starts playing during SPA nav
             const video = player.querySelector("video");
             if (video && !video.paused && !video.__shutUpUserActivated) {
+              console.log("shutup: MutationObserver — pausing video after overlay install");
               try { video.pause(); } catch (e) {}
             }
           }
@@ -425,9 +597,9 @@
 
     // Init
     function init() {
+      console.log("shutup: init()", { pathname: location.pathname });
       installOverlay();
       startObserving();
-      // Retries for initial page load
       setTimeout(installOverlay, 200);
       setTimeout(installOverlay, 600);
       setTimeout(installOverlay, 1500);
